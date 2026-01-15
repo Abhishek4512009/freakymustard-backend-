@@ -4,19 +4,34 @@ const { drive } = require('../auth'); // Adjust path
 const https = require('https');
 
 const driveAgent = new https.Agent({ keepAlive: true, maxSockets: 50 });
-const MOVIE_FOLDER_ID = process.env.MOVIE_FOLDER_ID || '1FHOpM5cCOj3CFy3zU5mESc4vhWv_5GIk'; // Default from analysis
+const MOVIE_FOLDER_ID = process.env.MOVIE_FOLDER_ID || '1FHOpM5cCOj3CFy3zU5mESc4vhWv_5GIk';
+const SERIES_FOLDER_ID = process.env.SERIES_FOLDER_ID || MOVIE_FOLDER_ID; // Fallback
+const OTHERS_FOLDER_ID = process.env.OTHERS_FOLDER_ID || MOVIE_FOLDER_ID; // Fallback
 
-// --- LIST MOVIES (Global) ---
+// --- LIST MOVIES/SERIES (Global) ---
 router.get('/list', async (req, res) => {
     try {
-        const query = `'${MOVIE_FOLDER_ID}' in parents and (mimeType contains 'video' or mimeType = 'application/vnd.google-apps.folder') and trashed = false`;
+        const { category, folderId } = req.query;
+        let targetFolder = MOVIE_FOLDER_ID;
+
+        // 1. Determine Root Folder based on Category
+        if (category === 'series') targetFolder = SERIES_FOLDER_ID;
+        else if (category === 'others') targetFolder = OTHERS_FOLDER_ID;
+
+        // 2. If navigating inside a folder, use that specific ID
+        if (folderId) targetFolder = folderId;
+
+        const query = `'${targetFolder}' in parents and (mimeType contains 'video' or mimeType = 'application/vnd.google-apps.folder') and trashed = false`;
+        
         const response = await drive.files.list({
             q: query,
             fields: 'files(id, name, size, thumbnailLink, mimeType)',
             pageSize: 100
         });
+        
         res.json(response.data.files);
     } catch (e) {
+        console.error("Movie List Error:", e.message);
         res.status(500).json({ error: e.message });
     }
 });
