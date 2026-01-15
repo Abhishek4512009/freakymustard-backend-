@@ -151,15 +151,35 @@ router.post('/download', async (req, res) => {
 
         const cleanTitle = video.title.replace(/[^a-zA-Z0-9]/g, '_');
         const tempFilePath = path.join(os.tmpdir(), `${cleanTitle}.mp3`);
+        
+        // Cookie Logic (Ported from old server)
+        const LOCKED_COOKIES_PATH = '/etc/secrets/cookies.txt';
+        const WRITABLE_COOKIES_PATH = path.join(os.tmpdir(), 'cookies.txt');
 
-        // Download logic
-        await ytDlpWrap.execPromise([
+        if (fs.existsSync(LOCKED_COOKIES_PATH)) {
+            try {
+                fs.copyFileSync(LOCKED_COOKIES_PATH, WRITABLE_COOKIES_PATH);
+                console.log(`✅ Cookies loaded for ${video.videoId}`);
+            } catch (e) {
+                console.error("⚠️ Failed to copy cookies:", e);
+            }
+        }
+
+        let ytArgs = [
             video.url,
             '-x', '--audio-format', 'mp3',
             '--ffmpeg-location', ffmpegPath,
             '-o', tempFilePath,
-            '--no-check-certificates'
-        ]);
+            '--no-check-certificates',
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+         //   '--js-runtimes', 'node' // Attempt to fix JS warning
+        ];
+
+        if (fs.existsSync(WRITABLE_COOKIES_PATH)) {
+            ytArgs.push('--cookies', WRITABLE_COOKIES_PATH);
+        }
+
+        await ytDlpWrap.execPromise(ytArgs);
 
         const media = {
             mimeType: 'audio/mpeg',
