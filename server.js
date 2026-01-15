@@ -33,11 +33,11 @@ app.listen(PORT, () => {
     console.log(`🚀 Unified Streamer running on port ${PORT}`);
 
     // --- KEEP-ALIVE HEARTBEAT ---
-    // Pings itself every 5 minutes to prevent Render free tier from sleeping
-    const http = require('http');
+    // Pings the public URL to ensure Render's load balancer sees activity
+    const https = require('https');
     setInterval(() => {
-        http.get(`http://localhost:${PORT}`, (res) => {
-            // console.log('💓 Heartbeat sent'); // Optional log
+        https.get('https://freakymustard.onrender.com', (res) => {
+            // console.log('💓 Heartbeat sent to public URL');
         }).on('error', (err) => {
             console.error('Heartbeat failed:', err.message);
         });
