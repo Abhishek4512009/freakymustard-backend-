@@ -15,7 +15,7 @@ const binaryPath = path.join(__dirname, '..', binaryName);
 // Actually, let's use the one from node_modules if possible or expect it in root.
 // For now, assume it's set up like Mystream.
 
-const ytDlpWrap = new YTDlpWrap(); // Let it find system binary or we configure it later
+const ytDlpWrap = new YTDlpWrap(binaryPath); // Use the downloaded binary
 
 // Global Config
 const SPECIFIC_FOLDER_ID = process.env.FOLDER_ID;
