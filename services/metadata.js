@@ -48,24 +48,40 @@ function cleanFilename(filename) {
 async function scrapeIMDb(query) {
     console.log(`🎬 Scraping IMDb for: "${query}"`);
     const searchUrl = `https://www.imdb.com/find/?q=${encodeURIComponent(query)}&s=tt&ttype=ft`;
+    
+    // Use aggressive headers to look like a real browser
     const { data: searchHtml } = await axios.get(searchUrl, {
-        headers: { 
+        headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Referer': 'https://www.google.com/'
         }
     });
 
     const $ = cheerio.load(searchHtml);
-    const firstResultLink = $('.ipc-metadata-list-summary-item__t').first().attr('href');
     
+    // Robust Selector: Find any link containing /title/tt
+    // The previous specific class selector became invalid.
+    let firstResultLink = null;
+    $('a[href*="/title/tt"]').each((i, el) => {
+        const href = $(el).attr('href');
+        if (href && href.match(/\/title\/tt\d+/)) {
+            firstResultLink = href;
+            return false; // Break loop
+        }
+    });
+
     if (!firstResultLink) throw new Error('No results');
 
     const moviePageUrl = `https://www.imdb.com${firstResultLink}`;
     const { data: movieHtml } = await axios.get(moviePageUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' }
+        headers: { 
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9'
+        }
     });
-    
+
     const $movie = cheerio.load(movieHtml);
     return {
         title: $movie('meta[property="og:title"]').attr('content') || query,
@@ -101,6 +117,8 @@ async function fetchMovieMeta(filename) {
                     console.error(`   ❌ Failed both attempts for: ${filename}`);
                 }
             }
+        } else {
+             console.error(`   ❌ Failed to scrape: ${filename} (${e.message})`);
         }
     }
 
@@ -131,7 +149,7 @@ async function fetchSeriesMeta(filename) {
 
         const meta = {
             filename,
-            title: data.name + episodeTag, // "Fallout S01E01"
+            title: data.name + episodeTag, 
             poster: data.image ? data.image.medium : '', 
             description: data.summary ? data.summary.replace(/<[^>]*>/g, '') : '', 
             year: data.premiered ? data.premiered.split('-')[0] : '',
