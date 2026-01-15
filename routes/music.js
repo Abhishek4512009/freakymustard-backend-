@@ -15,7 +15,14 @@ const binaryPath = path.join(__dirname, '..', binaryName);
 // Actually, let's use the one from node_modules if possible or expect it in root.
 // For now, assume it's set up like Mystream.
 
-const ytDlpWrap = new YTDlpWrap(binaryPath); // Use the downloaded binary
+console.log(`Checking for yt-dlp binary at: ${binaryPath}`);
+if (fs.existsSync(binaryPath)) {
+    console.log('✅ yt-dlp binary found at path.');
+} else {
+    console.error('❌ yt-dlp binary NOT found at path. Postinstall might have failed.');
+}
+
+const ytDlpWrap = new YTDlpWrap(binaryPath);
 
 // Global Config
 const SPECIFIC_FOLDER_ID = process.env.FOLDER_ID;
