@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { drive } = require('../auth'); // Adjust path
+const { fetchMovieMeta, fetchSeriesMeta } = require('../services/metadata');
 const https = require('https');
 
 const driveAgent = new https.Agent({ keepAlive: true, maxSockets: 50 });
@@ -28,8 +29,26 @@ router.get('/list', async (req, res) => {
             fields: 'files(id, name, size, thumbnailLink, mimeType)',
             pageSize: 100
         });
+
+        // 3. Enrich with Metadata (Parallel)
+        const enrichedFiles = await Promise.all(response.data.files.map(async (file) => {
+            // Only fetch meta for videos, not folders
+            if (file.mimeType.includes('video')) {
+                let meta;
+                if (category === 'series') {
+                    meta = await fetchSeriesMeta(file.name);
+                } else if (category === 'others') {
+                     // For 'others', we might skip or just use movie scraper
+                     meta = { filename: file.name, title: file.name, poster: '' };
+                } else {
+                    meta = await fetchMovieMeta(file.name);
+                }
+                return { ...file, metadata: meta };
+            }
+            return file; // Return folder as is
+        }));
         
-        res.json(response.data.files);
+        res.json(enrichedFiles);
     } catch (e) {
         console.error("Movie List Error:", e.message);
         res.status(500).json({ error: e.message });
