@@ -9,6 +9,17 @@ const MOVIE_FOLDER_ID = process.env.MOVIE_FOLDER_ID || '1FHOpM5cCOj3CFy3zU5mESc4
 const SERIES_FOLDER_ID = process.env.SERIES_FOLDER_ID || MOVIE_FOLDER_ID; // Fallback
 const OTHERS_FOLDER_ID = process.env.OTHERS_FOLDER_ID || MOVIE_FOLDER_ID; // Fallback
 
+// Helper: Concurrency Limiter
+async function processWithConcurrency(items, concurrency, fn) {
+    const results = [];
+    for (let i = 0; i < items.length; i += concurrency) {
+        const chunk = items.slice(i, i + concurrency);
+        const chunkResults = await Promise.all(chunk.map(fn));
+        results.push(...chunkResults);
+    }
+    return results;
+}
+
 // --- LIST MOVIES/SERIES (Global) ---
 router.get('/list', async (req, res) => {
     try {
@@ -30,23 +41,31 @@ router.get('/list', async (req, res) => {
             pageSize: 100
         });
 
-        // 3. Enrich with Metadata (Parallel)
-        const enrichedFiles = await Promise.all(response.data.files.map(async (file) => {
+        // 3. Enrich with Metadata (Batched to prevent OOM/Rate Limits)
+        const processFile = async (file) => {
             // Only fetch meta for videos, not folders
             if (file.mimeType.includes('video')) {
                 let meta;
-                if (category === 'series') {
-                    meta = await fetchSeriesMeta(file.name);
-                } else if (category === 'others') {
-                     // For 'others', we might skip or just use movie scraper
-                     meta = { filename: file.name, title: file.name, poster: '' };
-                } else {
-                    meta = await fetchMovieMeta(file.name);
+                try {
+                    if (category === 'series') {
+                        meta = await fetchSeriesMeta(file.name);
+                    } else if (category === 'others') {
+                        // For 'others', we might skip or just use movie scraper
+                        meta = { filename: file.name, title: file.name, poster: '' };
+                    } else {
+                        meta = await fetchMovieMeta(file.name);
+                    }
+                } catch (err) {
+                    console.error(`Metadata failed for ${file.name}:`, err.message);
+                    meta = { filename: file.name, title: file.name, poster: '' };
                 }
                 return { ...file, metadata: meta };
             }
             return file; // Return folder as is
-        }));
+        };
+
+        // Use concurrency of 3 to stay safe on memory and rate limits
+        const enrichedFiles = await processWithConcurrency(response.data.files, 3, processFile);
         
         res.json(enrichedFiles);
     } catch (e) {
