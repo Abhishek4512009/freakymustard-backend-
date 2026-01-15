@@ -9,26 +9,34 @@ function cleanFilename(filename) {
     // 1. Remove Extension
     name = name.replace(/\.(mp4|mkv|avi|mov|webp)$/i, '');
     
-    // 2. Replace dots/underscores/hyphens with spaces
-    name = name.replace(/[._-]/g, ' ');
+    // 2. Replace dots/underscores/hyphens/parentheses with spaces
+    name = name.replace(/[._\-()]/g, ' ');
 
-    // 3. Extract Show Name (Stop at S01, E01, etc.)
-    const seasonMatch = name.match(/S\d{1,2}E\d{1,2}/i) || name.match(/Season \d+/i);
+    // 3. Extract Show Name (Stop at S01, E01, Season, Episode)
+    const seasonMatch = name.match(/S\d{1,2}E\d{1,2}/i) || 
+                        name.match(/Season \d+/i) || 
+                        name.match(/Episode \d+/i);
+    
     if (seasonMatch) {
         return name.substring(0, seasonMatch.index).trim();
     }
 
-    // 4. Extract Movie Name (Stop at Year or Quality)
+    // 4. Clean Movie Name
     // Common stopwords
     const stopWords = [
-        '1080p', '720p', '2160p', '4k', '5.1', 'web-dl', 'webrip', 'bluray', 'x264', 'x265', 'hevc', 'hdr', 'aac', 'yify', 'yts', 'galaxy', 'bone'
+        '1080p', '720p', '2160p', '4k', '5.1', 'web-dl', 'webrip', 'bluray', 
+        'x264', 'x265', 'hevc', 'hdr', 'aac', 'yify', 'yts', 'galaxy', 'bone', 
+        'h264', 'h265', '10bit', 'ddp5', 'dd5', 'esub', 'repack', 'rmteam', 'hcsubbed'
     ];
     
     // Regex for 4-digit year (19xx or 20xx)
     const yearMatch = name.match(/\b(19|20)\d{2}\b/);
     if (yearMatch) {
-         // Keep the year for movies as it helps accuracy
-        return name.substring(0, yearMatch.index + 4).trim(); 
+        // e.g. "Fight Club 1999 REPACK..." -> "Fight Club 1999"
+        const yearIndex = yearMatch.index;
+        const potentialName = name.substring(0, yearIndex + 4).trim();
+        // Return cleaned name with year
+        return potentialName.replace(/\s+/g, ' '); 
     }
 
     // If no year, cut at first stopword
@@ -39,43 +47,42 @@ function cleanFilename(filename) {
         }
     }
 
-    return name.trim();
+    return name.replace(/\s+/g, ' ').trim();
 }
 
 // 1. Scrape IMDb (Movies)
 async function fetchMovieMeta(filename) {
-    // Check Cache
     const cached = await Metadata.findOne({ filename });
     if (cached) return cached;
 
     const query = cleanFilename(filename);
-    console.log(`🎬 Scraping IMDb for: ${query} (Original: ${filename})`);
+    console.log(`🎬 Scraping IMDb for: "${query}" (Original: ${filename})`);
 
     try {
-        // Direct search on Google to find IMDb ID (More reliable than IMDb search bar)
-        // Note: Using a lightweight HTML search on Google is often blocked. 
-        // Let's stick to IMDb but try 'ADVANCED' search URL structure which is often cleaner.
-        
+        // Use IMDb 'find' endpoint with aggressive browser headers
         const searchUrl = `https://www.imdb.com/find/?q=${encodeURIComponent(query)}&s=tt&ttype=ft`;
         const { data: searchHtml } = await axios.get(searchUrl, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) width=1920 height=1080' }
+            headers: { 
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+            }
         });
 
         const $ = cheerio.load(searchHtml);
-        
-        // IMDb's class names change. Try robust selectors.
-        // 1. List items in search results
+        // Robust Selector for first movie result
         const firstResultLink = $('.ipc-metadata-list-summary-item__t').first().attr('href');
         
         if (!firstResultLink) {
-            console.log("   -> No results on IMDb search page.");
+            console.log(`   ❌ No results found on IMDb for: "${query}"`);
             throw new Error('No results');
         }
 
-        // B. Fetch Movie Page
         const moviePageUrl = `https://www.imdb.com${firstResultLink}`;
         const { data: movieHtml } = await axios.get(moviePageUrl, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) width=1920 height=1080' }
+            headers: { 
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
         });
 
         const $movie = cheerio.load(movieHtml);
@@ -88,13 +95,12 @@ async function fetchMovieMeta(filename) {
             type: 'movie'
         };
 
-        // Save to DB
         const newMeta = new Metadata(meta);
         await newMeta.save();
         return newMeta;
 
     } catch (e) {
-        console.error(`❌ Metadata Error (${filename}):`, e.message);
+        // console.error(`   ❌ Scraping Error:`, e.message);
         return { filename, title: query, poster: '' }; 
     }
 }
@@ -104,30 +110,33 @@ async function fetchSeriesMeta(filename) {
     const cached = await Metadata.findOne({ filename });
     if (cached) return cached;
 
-    const query = cleanFilename(filename); // Now returns just "Fallout" or "Breaking Bad"
-    console.log(`📺 Fetching TVMaze for: ${query} (Original: ${filename})`);
+    let query = cleanFilename(filename);
+    
+    // Series often have years in filename "Fallout 2024" but API wants "Fallout"
+    // Heuristic: remove year from end if present
+    const cleanQuery = query.replace(/\s(19|20)\d{2}$/, '').trim();
+    
+    console.log(`📺 Fetching TVMaze for: "${cleanQuery}" (derived from "${query}")`);
 
     try {
-        const url = `https://api.tvmaze.com/singlesearch/shows?q=${encodeURIComponent(query)}`;
+        const url = `https://api.tvmaze.com/singlesearch/shows?q=${encodeURIComponent(cleanQuery)}`;
         const { data } = await axios.get(url);
 
         const meta = {
             filename,
-            title: data.name, // Just use Show Name (e.g. "Fallout")
-            poster: data.image ? data.image.medium : '',
+            title: data.name,
+            poster: data.image ? data.image.medium : '', 
             description: data.summary ? data.summary.replace(/<[^>]*>/g, '') : '', 
             year: data.premiered ? data.premiered.split('-')[0] : '',
             type: 'series'
         };
 
-        // Save to DB
         const newMeta = new Metadata(meta);
         await newMeta.save();
         return newMeta;
 
     } catch (e) {
-        console.error(`❌ Metadata Error (${filename}):`, e.message);
-        // Fallback: title is the cleaned show name
+        console.error(`   ❌ TVMaze Error (${cleanQuery}):`, e.message);
         return { filename, title: query, poster: '' };
     }
 }
