@@ -1,3 +1,25 @@
+const express = require('express');
+const router = express.Router();
+const { drive } = require('../auth'); // Adjust path
+const User = require('../models/User');
+const ytSearch = require('yt-search');
+const YTDlpWrap = require('yt-dlp-wrap').default;
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const ffmpegPath = require('ffmpeg-static');
+
+const binaryName = process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
+const binaryPath = path.join(__dirname, '..', binaryName);
+// Note: binaryPath logic might need adjustment if not present, but using default usually works if in path or downloaded.
+// Actually, let's use the one from node_modules if possible or expect it in root.
+// For now, assume it's set up like Mystream.
+
+const ytDlpWrap = new YTDlpWrap(); // Let it find system binary or we configure it later
+
+// Global Config
+const SPECIFIC_FOLDER_ID = process.env.FOLDER_ID;
+
 // --- GET TRACKS ---
 router.get('/tracks', async (req, res) => {
     try {
