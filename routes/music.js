@@ -1,33 +1,13 @@
-const express = require('express');
-const router = express.Router();
-const { drive } = require('../auth'); // Adjust path
-const User = require('../models/User');
-const ytSearch = require('yt-search');
-const YTDlpWrap = require('yt-dlp-wrap').default;
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
-const ffmpegPath = require('ffmpeg-static');
-
-const binaryName = process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
-const binaryPath = path.join(__dirname, '..', binaryName);
-// Note: binaryPath logic might need adjustment if not present, but using default usually works if in path or downloaded.
-// Actually, let's use the one from node_modules if possible or expect it in root.
-// For now, assume it's set up like Mystream.
-
-const ytDlpWrap = new YTDlpWrap(); // Let it find system binary or we configure it later
-
-// Global Config
-const SPECIFIC_FOLDER_ID = process.env.FOLDER_ID;
-
 // --- GET TRACKS ---
 router.get('/tracks', async (req, res) => {
     try {
-        const username = req.query.username; // Or from session
+        const { username, folderId } = req.query;
         let targetFolderId = SPECIFIC_FOLDER_ID;
 
-        // If user logged in, use their folder
-        if (username) {
+        // Priority: Explicit folderId > Username's folder > Global Default
+        if (folderId) {
+            targetFolderId = folderId;
+        } else if (username) {
             const user = await User.findOne({ username });
             if (user) targetFolderId = user.folderId;
         }
@@ -43,6 +23,49 @@ router.get('/tracks', async (req, res) => {
     } catch (error) {
         console.error("Track Fetch Error:", error.message);
         res.status(500).send('Error fetching tracks');
+    }
+});
+
+// --- LIBRARY: ADD (Copy File) ---
+router.post('/library/add', async (req, res) => {
+    const { fileId, folderId } = req.body;
+    try {
+        await drive.files.copy({
+            fileId: fileId,
+            resource: { parents: [folderId] }
+        });
+        res.json({ success: true });
+    } catch (error) {
+        console.error("Library Add Error:", error);
+        res.status(500).send("Error adding to library");
+    }
+});
+
+// --- LIBRARY: REMOVE (Trash File) ---
+router.post('/library/remove', async (req, res) => {
+    const { fileId } = req.body;
+    try {
+        await drive.files.update({
+            fileId: fileId,
+            resource: { trashed: true }
+        });
+        res.json({ success: true });
+    } catch (error) {
+        console.error("Library Remove Error:", error);
+        res.status(500).send("Error removing from library");
+    }
+});
+
+// --- LIBRARY: REORDER ---
+router.post('/library/reorder', async (req, res) => {
+    const { folderId, newOrder } = req.body;
+    try {
+        // Find user by folderId (assuming 1:1 map)
+        await User.findOneAndUpdate({ folderId }, { trackOrder: newOrder });
+        res.json({ success: true });
+    } catch (error) {
+        console.error("Reorder Error:", error);
+        res.status(500).send("Error reordering");
     }
 });
 
@@ -81,11 +104,13 @@ router.get('/stream/:fileId', async (req, res) => {
 
 // --- DOWNLOAD (Convert YouTube) ---
 router.post('/download', async (req, res) => {
-    const { songName, username } = req.body;
+    const { songName, username, folderId } = req.body; // Accept folderId directly
     if (!songName) return res.status(400).send('No song name');
 
     let targetFolder = SPECIFIC_FOLDER_ID;
-    if (username) {
+    if (folderId) {
+        targetFolder = folderId;
+    } else if (username) {
         const user = await User.findOne({ username });
         if (user) targetFolder = user.folderId;
     }
@@ -99,7 +124,6 @@ router.post('/download', async (req, res) => {
         const tempFilePath = path.join(os.tmpdir(), `${cleanTitle}.mp3`);
 
         // Download logic
-        // Ensuring yt-dlp is available is crucial here.
         await ytDlpWrap.execPromise([
             video.url,
             '-x', '--audio-format', 'mp3',
@@ -122,7 +146,7 @@ router.post('/download', async (req, res) => {
         res.json({ success: true, file: driveResponse.data });
     } catch (error) {
         console.error('Download Failed:', error);
-        res.status(500).send('Download failed');
+        res.status(500).send('Download failed: ' + error.message);
     }
 });
 
