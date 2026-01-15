@@ -33,7 +33,7 @@ app.listen(PORT, () => {
     console.log(`🚀 Unified Streamer running on port ${PORT}`);
 
     // --- KEEP-ALIVE HEARTBEAT ---
-    // Pings itself every 14 minutes to prevent Render free tier from sleeping
+    // Pings itself every 5 minutes to prevent Render free tier from sleeping
     const http = require('http');
     setInterval(() => {
         http.get(`http://localhost:${PORT}`, (res) => {
@@ -41,5 +41,5 @@ app.listen(PORT, () => {
         }).on('error', (err) => {
             console.error('Heartbeat failed:', err.message);
         });
-    }, 14 * 60 * 1000); // 14 Minutes
+    }, 5 * 60 * 1000); // 5 Minutes
 });
