@@ -3,6 +3,8 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const connectDB = require('./db');
+
+// Connect to MongoDB
 const YTDlpWrap = require('yt-dlp-wrap').default;
 const fs = require('fs');
 
@@ -27,4 +29,17 @@ app.get('/', (req, res) => res.send('🚀 FreakyMustard Backend is Running!'));
 const PORT = process.env.PORT || 3000;
 
 // Start Server
-app.listen(PORT, () => console.log(`🚀 Unified Streamer running on port ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`🚀 Unified Streamer running on port ${PORT}`);
+
+    // --- KEEP-ALIVE HEARTBEAT ---
+    // Pings itself every 14 minutes to prevent Render free tier from sleeping
+    const http = require('http');
+    setInterval(() => {
+        http.get(`http://localhost:${PORT}`, (res) => {
+            // console.log('💓 Heartbeat sent'); // Optional log
+        }).on('error', (err) => {
+            console.error('Heartbeat failed:', err.message);
+        });
+    }, 14 * 60 * 1000); // 14 Minutes
+});
