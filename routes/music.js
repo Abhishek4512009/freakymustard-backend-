@@ -132,49 +132,7 @@ router.get('/stream/:fileId', async (req, res) => {
 // --- NEW DOWNLOAD ROUTE (USING PIPED API) ---
 // --- DYNAMIC INSTANCE MANAGER ---
 // Fetches the list of active Piped servers so you don't rely on just one.
-let cachedInstances = [];
-let lastFetchTime = 0;
-const INSTANCE_LIST_URL = 'https://raw.githubusercontent.com/WikiMobile/piped-instances/main/instances.json';
-
-// Backup list if GitHub is down
-const FALLBACK_INSTANCES = [
-    'https://pipedapi.kavin.rocks',
-    'https://api.piped.privacy.com.de',
-    'https://pipedapi.drgns.space',
-    'https://api.piped.iot.si',
-    'https://api.piped.projectsegfau.lt'
-];
-
-async function getWorkingInstances() {
-    const now = Date.now();
-    // Refresh list every 1 hour (3600000 ms)
-    if (cachedInstances.length > 0 && (now - lastFetchTime) < 3600000) {
-        return cachedInstances;
-    }
-
-    try {
-        console.log('🔄 Fetching fresh Piped instances...');
-        const response = await axios.get(INSTANCE_LIST_URL, { timeout: 5000 });
-        
-        // Filter for servers marked as "up" and extract their API URL
-        const freshList = response.data
-            .filter(i => i.api_url && i.up === true)
-            .map(i => i.api_url);
-
-        if (freshList.length > 0) {
-            cachedInstances = freshList;
-            lastFetchTime = now;
-            console.log(`✅ Updated instance list. Found ${freshList.length} working servers.`);
-            return freshList;
-        }
-    } catch (error) {
-        console.warn('⚠️ Failed to fetch dynamic list, using fallbacks:', error.message);
-    }
-
-    return FALLBACK_INSTANCES;
-}
-
-// --- SMART DOWNLOAD ROUTE ---
+// --- BIZARRE SOLUTION: THE BOLLYWOOD BACKDOOR (JioSaavn) ---
 router.post('/download', async (req, res) => {
     const { songName, username, folderId } = req.body;
     if (!songName) return res.status(400).send('No song name');
@@ -187,67 +145,59 @@ router.post('/download', async (req, res) => {
         if (user) targetFolder = user.folderId;
     }
 
-    let downloadUrl = null;
-    let videoTitle = '';
-    let lastError = null;
-
     try {
-        // 1. Get working servers
-        const instances = await getWorkingInstances();
-        console.log(`🔍 Searching for: ${songName}`);
+        console.log(`Searching JioSaavn for: ${songName}`);
+        
+        // 1. Search using the public Saavn API
+        // This API returns metadata + direct download links
+        const SAAVN_API = 'https://saavn.dev/api/search/songs';
+        const searchResponse = await axios.get(SAAVN_API, {
+            params: { query: songName }
+        });
 
-        // 2. ROTATION LOGIC: Try servers one by one until one works
-        for (const apiBase of instances) {
-            try {
-                // Step A: Search for the video
-                const searchResponse = await axios.get(`${apiBase}/search`, {
-                    params: { q: songName, filter: 'music_songs' },
-                    timeout: 6000 // 6s timeout per server
-                });
+        const results = searchResponse.data.data.results;
 
-                if (!searchResponse.data.items || searchResponse.data.items.length === 0) continue;
-
-                const firstResult = searchResponse.data.items[0];
-                const videoId = firstResult.url.split('v=')[1];
-                videoTitle = firstResult.title.replace(/[^a-zA-Z0-9]/g, '_'); // Clean title
-
-                console.log(`Found on ${apiBase}: ${firstResult.title}`);
-
-                // Step B: Get the direct stream link
-                const streamResponse = await axios.get(`${apiBase}/streams/${videoId}`, { timeout: 6000 });
-                const audioStreams = streamResponse.data.audioStreams;
-
-                if (audioStreams && audioStreams.length > 0) {
-                    // Success! Pick 'm4a' or first available audio
-                    const bestStream = audioStreams.find(s => s.format === 'M4A') || audioStreams[0];
-                    downloadUrl = bestStream.url;
-                    break; // STOP LOOPING, WE FOUND IT!
-                }
-            } catch (e) {
-                // Silent fail on this server, loop continues to the next one
-                lastError = e.message;
-            }
+        if (!results || results.length === 0) {
+            return res.status(404).send('Song not found on JioSaavn (try adding artist name)');
         }
 
-        if (!downloadUrl) {
-            return res.status(500).send('All servers failed. Last error: ' + lastError);
-        }
+        // 2. Pick the first result
+        const song = results[0];
+        console.log(`Found: ${song.name} by ${song.primaryArtists}`);
 
-        // 3. Stream to Drive
-        console.log(`⬇️ Streaming to Drive...`);
+        // 3. Extract the Highest Quality Download Link
+        // The API returns an array of qualities. The last one is usually 320kbps/Best.
+        if (!song.downloadUrl || song.downloadUrl.length === 0) {
+            throw new Error('No download links found for this song.');
+        }
+        
+        // Use the last link in the array (usually the highest quality)
+        const bestQuality = song.downloadUrl[song.downloadUrl.length - 1]; 
+        const downloadLink = bestQuality.url;
+
+        console.log(`Source Quality: ${bestQuality.quality}`);
+
+        // 4. Stream to Drive
+        // Note: Saavn links sometimes expire, so we stream immediately.
         const fileStream = await axios({
-            url: downloadUrl,
+            url: downloadLink,
             method: 'GET',
             responseType: 'stream'
         });
 
+        // Clean up the filename
+        const cleanTitle = `${song.name} - ${song.primaryArtists}`.replace(/[^a-zA-Z0-9 \-\.]/g, '');
+
         const media = {
-            mimeType: 'audio/mp4', // M4A
+            mimeType: 'audio/mpeg', // It's usually MP3 or M4A
             body: fileStream.data
         };
 
         const driveResponse = await drive.files.create({
-            resource: { name: `${videoTitle}.m4a`, parents: [targetFolder] },
+            resource: { 
+                name: `${cleanTitle}.mp3`, 
+                parents: [targetFolder] 
+            },
             media: media,
             fields: 'id, name'
         });
@@ -256,9 +206,12 @@ router.post('/download', async (req, res) => {
         res.json({ success: true, file: driveResponse.data });
 
     } catch (error) {
-        console.error('System Error:', error.message);
-        res.status(500).send('System error: ' + error.message);
+        console.error('Saavn Error:', error.message);
+        // Fallback or error logging
+        if (error.response) {
+            console.error('API Response:', error.response.data);
+        }
+        res.status(500).send('Download failed: ' + error.message);
     }
 });
-
 module.exports = router;
