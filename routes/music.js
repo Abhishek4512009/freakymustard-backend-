@@ -146,34 +146,7 @@ router.get('/stream/:fileId', async (req, res) => {
     }
 });
 
-// --- DOWNLOAD (Convert YouTube) ---
-// --- DOWNLOAD PROGRESS TRACKING ---
-const downloadProgress = new Map(); // Store active downloads: { id: { percent: 0, status: 'downloading' } }
-
-// --- SSE: DOWNLOAD PROGRESS ---
-router.get('/progress/:downloadId', (req, res) => {
-    const { downloadId } = req.params;
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-
-    const sendProgress = () => {
-        const progress = downloadProgress.get(downloadId);
-        if (progress) {
-            res.write(`data: ${JSON.stringify(progress)}\n\n`);
-            if (progress.status === 'completed' || progress.status === 'error') {
-                downloadProgress.delete(downloadId);
-                res.end();
-            }
-        }
-    };
-
-    const interval = setInterval(sendProgress, 500); // Update every 500ms
-
-    req.on('close', () => clearInterval(interval));
-});
-
-// --- DOWNLOAD (Async with Progress) ---
+// --- DOWNLOAD (Synchronous with Cookies) ---
 router.post('/download', async (req, res) => {
     const { songName, username, folderId } = req.body;
     if (!songName) return res.status(400).send('No song name');
@@ -186,98 +159,61 @@ router.post('/download', async (req, res) => {
         if (user) targetFolder = user.folderId;
     }
 
-    const downloadId = Date.now().toString(); // Simple unique ID
-    downloadProgress.set(downloadId, { percent: 0, status: 'searching' });
+    try {
+        console.log(`🔎 Searching for: ${songName}`);
+        const searchResults = await ytSearch(songName);
+        const video = searchResults.videos[0];
+        if (!video) return res.status(404).json({ success: false, message: 'Song not found' });
 
-    // Return ID immediately
-    res.json({ success: true, downloadId });
+        const cleanTitle = video.title.replace(/[^a-zA-Z0-9]/g, '_');
+        const tempFilePath = path.join(os.tmpdir(), `${cleanTitle}.mp3`);
 
-    // 2. Start Background Process
-    (async () => {
-        try {
-            console.log(`🔎 Searching for: ${songName}`);
-            const searchResults = await ytSearch(songName);
-            const video = searchResults.videos[0];
-            if (!video) {
-                downloadProgress.set(downloadId, { percent: 0, status: 'error', message: 'Song not found' });
-                return;
-            }
-
-            downloadProgress.set(downloadId, { percent: 10, status: 'preparing' });
-
-            const cleanTitle = video.title.replace(/[^a-zA-Z0-9]/g, '_');
-            const tempFilePath = path.join(os.tmpdir(), `${cleanTitle}.mp3`);
-
-            // Check Binary
-            if (!fs.existsSync(binaryPath)) {
-                console.log("⬇️ Downloading yt-dlp binary...");
-                await YTDlpWrap.downloadFromGithub(binaryPath);
-            }
-
-            // Cookie Logic
-            const LOCKED_COOKIES_PATH = '/etc/secrets/cookies.txt';
-            const WRITABLE_COOKIES_PATH = path.join(os.tmpdir(), 'cookies.txt');
-            if (fs.existsSync(LOCKED_COOKIES_PATH)) {
-                try { fs.copyFileSync(LOCKED_COOKIES_PATH, WRITABLE_COOKIES_PATH); } catch (e) { }
-            }
-
-            let ytArgs = [
-                video.url,
-                '-x', '--audio-format', 'mp3',
-                '--ffmpeg-location', ffmpegPath,
-                '-o', tempFilePath,
-                '--no-check-certificates',
-                '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            ];
-            if (fs.existsSync(WRITABLE_COOKIES_PATH)) ytArgs.push('--cookies', WRITABLE_COOKIES_PATH);
-
-            console.log(`⬇️ Starting download: ${video.title}`);
-            const ytDlpEvent = ytDlpWrap.exec(ytArgs);
-
-            ytDlpEvent.on('progress', (progress) => {
-                // progress: { percent, totalSize, currentSpeed, eta }
-                downloadProgress.set(downloadId, {
-                    percent: progress.percent,
-                    status: 'downloading',
-                    speed: progress.currentSpeed,
-                    eta: progress.eta
-                });
-            });
-
-            ytDlpEvent.on('error', (err) => {
-                console.error("yt-dlp error:", err);
-                downloadProgress.set(downloadId, { percent: 0, status: 'error', message: 'Download tool failed' });
-            });
-
-            ytDlpEvent.on('close', async () => {
-                try {
-                    console.log(`☁️ Uploading to Drive...`);
-                    downloadProgress.set(downloadId, { percent: 99, status: 'uploading' });
-
-                    const media = {
-                        mimeType: 'audio/mpeg',
-                        body: fs.createReadStream(tempFilePath)
-                    };
-                    await drive.files.create({
-                        resource: { name: `${video.title}.mp3`, parents: [targetFolder] },
-                        media: media,
-                        fields: 'id, name'
-                    });
-
-                    fs.unlinkSync(tempFilePath);
-                    downloadProgress.set(downloadId, { percent: 100, status: 'completed', title: video.title });
-                    console.log(`✅ Completed: ${video.title}`);
-                } catch (err) {
-                    console.error("Drive Upload Error:", err);
-                    downloadProgress.set(downloadId, { percent: 0, status: 'error', message: 'Upload to Drive failed' });
-                }
-            });
-
-        } catch (error) {
-            console.error("Download Workflow Error:", error);
-            downloadProgress.set(downloadId, { percent: 0, status: 'error', message: error.message });
+        // Check Binary
+        if (!fs.existsSync(binaryPath)) {
+            console.log("⬇️ Downloading yt-dlp binary...");
+            await YTDlpWrap.downloadFromGithub(binaryPath);
         }
-    })();
+
+        // Cookie Logic (PRESERVED)
+        const LOCKED_COOKIES_PATH = '/etc/secrets/cookies.txt';
+        const WRITABLE_COOKIES_PATH = path.join(os.tmpdir(), 'cookies.txt');
+        if (fs.existsSync(LOCKED_COOKIES_PATH)) {
+            try { fs.copyFileSync(LOCKED_COOKIES_PATH, WRITABLE_COOKIES_PATH); } catch (e) { }
+        }
+
+        let ytArgs = [
+            video.url,
+            '-x', '--audio-format', 'mp3',
+            '--ffmpeg-location', ffmpegPath,
+            '-o', tempFilePath,
+            '--no-check-certificates',
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        ];
+        if (fs.existsSync(WRITABLE_COOKIES_PATH)) ytArgs.push('--cookies', WRITABLE_COOKIES_PATH);
+
+        console.log(`⬇️ Starting download: ${video.title}`);
+        await ytDlpWrap.execPromise(ytArgs);
+
+        console.log(`☁️ Uploading to Drive...`);
+        const media = {
+            mimeType: 'audio/mpeg',
+            body: fs.createReadStream(tempFilePath)
+        };
+        await drive.files.create({
+            resource: { name: `${video.title}.mp3`, parents: [targetFolder] },
+            media: media,
+            fields: 'id, name'
+        });
+
+        fs.unlinkSync(tempFilePath);
+        console.log(`✅ Completed: ${video.title}`);
+        
+        res.json({ success: true, title: video.title });
+
+    } catch (error) {
+        console.error("Download Error:", error);
+        res.status(500).json({ success: false, message: error.message });
+    }
 });
 
 module.exports = router;
