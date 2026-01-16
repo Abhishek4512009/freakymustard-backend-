@@ -151,7 +151,10 @@ router.post('/download', async (req, res) => {
 
         const cleanTitle = video.title.replace(/[^a-zA-Z0-9]/g, '_');
         const tempFilePath = path.join(os.tmpdir(), `${cleanTitle}.mp3`);
-        
+
+        // Download logic
+        // Download logic
+
         // Cookie Logic (Ported from old server)
         const LOCKED_COOKIES_PATH = '/etc/secrets/cookies.txt';
         const WRITABLE_COOKIES_PATH = path.join(os.tmpdir(), 'cookies.txt');
@@ -172,7 +175,7 @@ router.post('/download', async (req, res) => {
             '-o', tempFilePath,
             '--no-check-certificates',
             '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-         //   '--js-runtimes', 'node' // Attempt to fix JS warning
+            //   '--js-runtimes', 'node' // Attempt to fix JS warning
         ];
 
         if (fs.existsSync(WRITABLE_COOKIES_PATH)) {
