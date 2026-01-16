@@ -130,6 +130,51 @@ router.get('/stream/:fileId', async (req, res) => {
 // --- NEW DOWNLOAD ROUTE (USING COBALT API v10) ---
 // --- NEW "SMART" DOWNLOAD ROUTE ---
 // --- NEW DOWNLOAD ROUTE (USING PIPED API) ---
+// --- DYNAMIC INSTANCE MANAGER ---
+// Fetches the list of active Piped servers so you don't rely on just one.
+let cachedInstances = [];
+let lastFetchTime = 0;
+const INSTANCE_LIST_URL = 'https://raw.githubusercontent.com/WikiMobile/piped-instances/main/instances.json';
+
+// Backup list if GitHub is down
+const FALLBACK_INSTANCES = [
+    'https://pipedapi.kavin.rocks',
+    'https://api.piped.privacy.com.de',
+    'https://pipedapi.drgns.space',
+    'https://api.piped.iot.si',
+    'https://api.piped.projectsegfau.lt'
+];
+
+async function getWorkingInstances() {
+    const now = Date.now();
+    // Refresh list every 1 hour (3600000 ms)
+    if (cachedInstances.length > 0 && (now - lastFetchTime) < 3600000) {
+        return cachedInstances;
+    }
+
+    try {
+        console.log('🔄 Fetching fresh Piped instances...');
+        const response = await axios.get(INSTANCE_LIST_URL, { timeout: 5000 });
+        
+        // Filter for servers marked as "up" and extract their API URL
+        const freshList = response.data
+            .filter(i => i.api_url && i.up === true)
+            .map(i => i.api_url);
+
+        if (freshList.length > 0) {
+            cachedInstances = freshList;
+            lastFetchTime = now;
+            console.log(`✅ Updated instance list. Found ${freshList.length} working servers.`);
+            return freshList;
+        }
+    } catch (error) {
+        console.warn('⚠️ Failed to fetch dynamic list, using fallbacks:', error.message);
+    }
+
+    return FALLBACK_INSTANCES;
+}
+
+// --- SMART DOWNLOAD ROUTE ---
 router.post('/download', async (req, res) => {
     const { songName, username, folderId } = req.body;
     if (!songName) return res.status(400).send('No song name');
@@ -142,62 +187,67 @@ router.post('/download', async (req, res) => {
         if (user) targetFolder = user.folderId;
     }
 
+    let downloadUrl = null;
+    let videoTitle = '';
+    let lastError = null;
+
     try {
-        console.log(`Searching Piped Database for: ${songName}`);
-        
-        // 1. Search for the video ID using Piped API
-        // Piped Instances: https://pipedapi.kavin.rocks (Main), https://api.piped.privacy.com.de (Backup)
-        const PIPED_API = 'https://pipedapi.kavin.rocks'; 
-        
-        const searchResponse = await axios.get(`${PIPED_API}/search`, {
-            params: {
-                q: songName,
-                filter: 'music_songs'
+        // 1. Get working servers
+        const instances = await getWorkingInstances();
+        console.log(`🔍 Searching for: ${songName}`);
+
+        // 2. ROTATION LOGIC: Try servers one by one until one works
+        for (const apiBase of instances) {
+            try {
+                // Step A: Search for the video
+                const searchResponse = await axios.get(`${apiBase}/search`, {
+                    params: { q: songName, filter: 'music_songs' },
+                    timeout: 6000 // 6s timeout per server
+                });
+
+                if (!searchResponse.data.items || searchResponse.data.items.length === 0) continue;
+
+                const firstResult = searchResponse.data.items[0];
+                const videoId = firstResult.url.split('v=')[1];
+                videoTitle = firstResult.title.replace(/[^a-zA-Z0-9]/g, '_'); // Clean title
+
+                console.log(`Found on ${apiBase}: ${firstResult.title}`);
+
+                // Step B: Get the direct stream link
+                const streamResponse = await axios.get(`${apiBase}/streams/${videoId}`, { timeout: 6000 });
+                const audioStreams = streamResponse.data.audioStreams;
+
+                if (audioStreams && audioStreams.length > 0) {
+                    // Success! Pick 'm4a' or first available audio
+                    const bestStream = audioStreams.find(s => s.format === 'M4A') || audioStreams[0];
+                    downloadUrl = bestStream.url;
+                    break; // STOP LOOPING, WE FOUND IT!
+                }
+            } catch (e) {
+                // Silent fail on this server, loop continues to the next one
+                lastError = e.message;
             }
-        });
-
-        if (!searchResponse.data.items || searchResponse.data.items.length === 0) {
-            return res.status(404).send('Song not found in database');
         }
 
-        // Get the first result's ID (e.g., "/watch?v=dQw4w9WgXcQ" -> "dQw4w9WgXcQ")
-        const firstResult = searchResponse.data.items[0];
-        const videoId = firstResult.url.split('v=')[1];
-        const videoTitle = firstResult.title.replace(/[^a-zA-Z0-9]/g, '_'); // Clean title
-
-        console.log(`Found: ${firstResult.title} [${videoId}]`);
-
-        // 2. Fetch the Direct Stream Links
-        const streamResponse = await axios.get(`${PIPED_API}/streams/${videoId}`);
-        const audioStreams = streamResponse.data.audioStreams;
-
-        if (!audioStreams || audioStreams.length === 0) {
-            throw new Error('No audio streams found for this video');
+        if (!downloadUrl) {
+            return res.status(500).send('All servers failed. Last error: ' + lastError);
         }
 
-        // 3. Pick the best audio quality (m4a is best for direct streaming)
-        // We look for 'm4a' format, or fallback to the first available one
-        const bestStream = audioStreams.find(s => s.format === 'M4A') || audioStreams[0];
-        
-        console.log(`Sourcing from: ${PIPED_API}`);
-
-        // 4. Stream to Drive
+        // 3. Stream to Drive
+        console.log(`⬇️ Streaming to Drive...`);
         const fileStream = await axios({
-            url: bestStream.url,
+            url: downloadUrl,
             method: 'GET',
             responseType: 'stream'
         });
 
         const media = {
-            mimeType: 'audio/mp4', // M4A is technically audio/mp4
+            mimeType: 'audio/mp4', // M4A
             body: fileStream.data
         };
 
         const driveResponse = await drive.files.create({
-            resource: { 
-                name: `${videoTitle}.m4a`, // Saving as .m4a (plays in all browsers)
-                parents: [targetFolder] 
-            },
+            resource: { name: `${videoTitle}.m4a`, parents: [targetFolder] },
             media: media,
             fields: 'id, name'
         });
@@ -206,13 +256,8 @@ router.post('/download', async (req, res) => {
         res.json({ success: true, file: driveResponse.data });
 
     } catch (error) {
-        console.error('Download Failed:', error.message);
-        if (error.response) {
-            // Log full API error if available
-            console.error('API Status:', error.response.status);
-            console.error('API Data:', error.response.data);
-        }
-        res.status(500).send('Download failed: ' + error.message);
+        console.error('System Error:', error.message);
+        res.status(500).send('System error: ' + error.message);
     }
 });
 
