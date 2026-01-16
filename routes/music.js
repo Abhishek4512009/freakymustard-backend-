@@ -48,7 +48,22 @@ router.get('/tracks', async (req, res) => {
             pageSize: 100,
         });
 
-        res.json(response.data.files);
+        let files = response.data.files;
+
+        // --- SORT BY USER PREFERENCE ---
+        if (folderId) {
+            const user = await User.findOne({ folderId });
+            if (user && user.trackOrder && user.trackOrder.length > 0) {
+                const orderMap = new Map(user.trackOrder.map((id, index) => [id, index]));
+                files.sort((a, b) => {
+                    const indexA = orderMap.has(a.id) ? orderMap.get(a.id) : Infinity;
+                    const indexB = orderMap.has(b.id) ? orderMap.get(b.id) : Infinity;
+                    return indexA - indexB;
+                });
+            }
+        }
+
+        res.json(files);
     } catch (error) {
         console.error("Track Fetch Error:", error.message);
         res.status(500).send('Error fetching tracks');
