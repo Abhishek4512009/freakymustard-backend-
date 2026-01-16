@@ -127,6 +127,7 @@ router.get('/stream/:fileId', async (req, res) => {
 });
 
 // --- NEW DOWNLOAD ROUTE (USING COBALT API) ---
+// --- NEW DOWNLOAD ROUTE (USING COBALT API v10) ---
 router.post('/download', async (req, res) => {
     const { songName, username, folderId } = req.body;
     if (!songName) return res.status(400).send('No song name');
@@ -147,15 +148,17 @@ router.post('/download', async (req, res) => {
         if (!video) return res.status(404).send('Not found');
 
         console.log(`Found video: ${video.title} (${video.url})`);
-        
+
         // 2. Ask Cobalt for a Clean Download Link
-        // We use the official Cobalt API to handle the anti-bot stuff
-        const cobaltResponse = await axios.post('https://api.cobalt.tools/api/json', {
+        // We use a community instance because the main API is restricted
+        // You can find more instances at https://cobalt.directory/ if this one goes down
+        const COBALT_API_URL = 'https://cobalt.xy24.eu'; // Try this or 'https://cobalt.ayo.tf'
+
+        const cobaltResponse = await axios.post(COBALT_API_URL, {
             url: video.url,
-            vCodec: "h264",
-            vQuality: "720",
-            aFormat: "mp3",
-            isAudioOnly: true
+            videoQuality: "720",
+            audioFormat: "mp3",
+            downloadMode: "audio" // NEW: Replaces 'isAudioOnly'
         }, {
             headers: {
                 'Accept': 'application/json',
@@ -163,18 +166,26 @@ router.post('/download', async (req, res) => {
             }
         });
 
-        // Check if Cobalt gave us a link
         const data = cobaltResponse.data;
-        if ((data.status !== 'stream' && data.status !== 'redirect') || !data.url) {
-            console.error('Cobalt Response:', data);
-            throw new Error('Cobalt could not generate a download link. Try again later.');
+        
+        // Handle different response statuses (stream, redirect, picker, etc.)
+        let downloadUrl = null;
+        if (data.status === 'stream' || data.status === 'redirect') {
+            downloadUrl = data.url;
+        } else if (data.status === 'picker' && data.picker && data.picker.length > 0) {
+            // If it returns a list of items (picker), grab the first audio one
+            const item = data.picker.find(i => i.type === 'audio') || data.picker[0];
+            downloadUrl = item.url;
         }
 
-        const downloadUrl = data.url;
+        if (!downloadUrl) {
+            console.error('Cobalt Response:', data);
+            throw new Error('Cobalt could not generate a direct download link.');
+        }
+
         console.log(`Cobalt Link Generated. Starting Stream to Drive...`);
 
         // 3. Stream the File Directly from Cobalt to Google Drive
-        // This avoids saving the file to Render's disk, which is faster and safer
         const fileStream = await axios({
             url: downloadUrl,
             method: 'GET',
