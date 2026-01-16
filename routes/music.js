@@ -1,39 +1,21 @@
 const express = require('express');
 const router = express.Router();
-const { drive } = require('../auth'); // Adjust path
+const { drive } = require('../auth'); // Adjust path if needed
 const User = require('../models/User');
 const ytSearch = require('yt-search');
-const YTDlpWrap = require('yt-dlp-wrap').default;
-const fs = require('fs');
+const axios = require('axios'); // We use this for Cobalt
 const path = require('path');
 const os = require('os');
-const ffmpegPath = require('ffmpeg-static');
-
-const binaryName = process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
-const binaryPath = path.join(__dirname, '..', binaryName);
-// Note: binaryPath logic might need adjustment if not present, but using default usually works if in path or downloaded.
-// Actually, let's use the one from node_modules if possible or expect it in root.
-// For now, assume it's set up like Mystream.
-
-console.log(`Checking for yt-dlp binary at: ${binaryPath}`);
-if (fs.existsSync(binaryPath)) {
-    console.log('✅ yt-dlp binary found at path.');
-} else {
-    console.error('❌ yt-dlp binary NOT found at path. Postinstall might have failed.');
-}
-
-const ytDlpWrap = new YTDlpWrap(binaryPath);
 
 // Global Config
 const SPECIFIC_FOLDER_ID = process.env.FOLDER_ID;
 
-// --- GET TRACKS ---
+// --- GET TRACKS (No changes) ---
 router.get('/tracks', async (req, res) => {
     try {
         const { username, folderId } = req.query;
         let targetFolderId = SPECIFIC_FOLDER_ID;
 
-        // Priority: Explicit folderId > Username's folder > Global Default
         if (folderId) {
             targetFolderId = folderId;
         } else if (username) {
@@ -50,7 +32,6 @@ router.get('/tracks', async (req, res) => {
 
         let files = response.data.files;
 
-        // --- SORT BY USER PREFERENCE ---
         if (folderId) {
             const user = await User.findOne({ folderId });
             if (user && user.trackOrder && user.trackOrder.length > 0) {
@@ -70,7 +51,7 @@ router.get('/tracks', async (req, res) => {
     }
 });
 
-// --- LIBRARY: ADD (Copy File) ---
+// --- LIBRARY: ADD (No changes) ---
 router.post('/library/add', async (req, res) => {
     const { fileId, folderId } = req.body;
     try {
@@ -85,7 +66,7 @@ router.post('/library/add', async (req, res) => {
     }
 });
 
-// --- LIBRARY: REMOVE (Trash File) ---
+// --- LIBRARY: REMOVE (No changes) ---
 router.post('/library/remove', async (req, res) => {
     const { fileId } = req.body;
     try {
@@ -100,11 +81,10 @@ router.post('/library/remove', async (req, res) => {
     }
 });
 
-// --- LIBRARY: REORDER ---
+// --- LIBRARY: REORDER (No changes) ---
 router.post('/library/reorder', async (req, res) => {
     const { folderId, newOrder } = req.body;
     try {
-        // Find user by folderId (assuming 1:1 map)
         await User.findOneAndUpdate({ folderId }, { trackOrder: newOrder });
         res.json({ success: true });
     } catch (error) {
@@ -113,7 +93,7 @@ router.post('/library/reorder', async (req, res) => {
     }
 });
 
-// --- STREAM ---
+// --- STREAM (No changes) ---
 router.get('/stream/:fileId', async (req, res) => {
     const { fileId } = req.params;
     const { range } = req.headers;
@@ -146,9 +126,9 @@ router.get('/stream/:fileId', async (req, res) => {
     }
 });
 
-// --- DOWNLOAD (Convert YouTube) ---
+// --- NEW DOWNLOAD ROUTE (USING COBALT API) ---
 router.post('/download', async (req, res) => {
-    const { songName, username, folderId } = req.body; // Accept folderId directly
+    const { songName, username, folderId } = req.body;
     if (!songName) return res.status(400).send('No song name');
 
     let targetFolder = SPECIFIC_FOLDER_ID;
@@ -160,60 +140,69 @@ router.post('/download', async (req, res) => {
     }
 
     try {
+        // 1. Search YouTube for the Link
+        console.log(`Searching for: ${songName}`);
         const searchResults = await ytSearch(songName);
         const video = searchResults.videos[0];
         if (!video) return res.status(404).send('Not found');
 
-        const cleanTitle = video.title.replace(/[^a-zA-Z0-9]/g, '_');
-        const tempFilePath = path.join(os.tmpdir(), `${cleanTitle}.mp3`);
-
-        // Download logic
-        // Download logic
-
-        // Cookie Logic (Ported from old server)
-        const LOCKED_COOKIES_PATH = '/etc/secrets/cookies.txt';
-        const WRITABLE_COOKIES_PATH = path.join(os.tmpdir(), 'cookies.txt');
-
-        if (fs.existsSync(LOCKED_COOKIES_PATH)) {
-            try {
-                fs.copyFileSync(LOCKED_COOKIES_PATH, WRITABLE_COOKIES_PATH);
-                console.log(`✅ Cookies loaded for ${video.videoId}`);
-            } catch (e) {
-                console.error("⚠️ Failed to copy cookies:", e);
+        console.log(`Found video: ${video.title} (${video.url})`);
+        
+        // 2. Ask Cobalt for a Clean Download Link
+        // We use the official Cobalt API to handle the anti-bot stuff
+        const cobaltResponse = await axios.post('https://api.cobalt.tools/api/json', {
+            url: video.url,
+            vCodec: "h264",
+            vQuality: "720",
+            aFormat: "mp3",
+            isAudioOnly: true
+        }, {
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
             }
+        });
+
+        // Check if Cobalt gave us a link
+        const data = cobaltResponse.data;
+        if ((data.status !== 'stream' && data.status !== 'redirect') || !data.url) {
+            console.error('Cobalt Response:', data);
+            throw new Error('Cobalt could not generate a download link. Try again later.');
         }
 
-        let ytArgs = [
-            video.url,
-            '-x', '--audio-format', 'mp3',
-            '--ffmpeg-location', ffmpegPath,
-            '-o', tempFilePath,
-            '--no-check-certificates',
-            '--remote-components', 'ejs:github',
-            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            '--js-runtimes', 'node' // Attempt to fix JS warning
-        ];
+        const downloadUrl = data.url;
+        console.log(`Cobalt Link Generated. Starting Stream to Drive...`);
 
-        if (fs.existsSync(WRITABLE_COOKIES_PATH)) {
-            ytArgs.push('--cookies', WRITABLE_COOKIES_PATH);
-        }
-
-        await ytDlpWrap.execPromise(ytArgs);
+        // 3. Stream the File Directly from Cobalt to Google Drive
+        // This avoids saving the file to Render's disk, which is faster and safer
+        const fileStream = await axios({
+            url: downloadUrl,
+            method: 'GET',
+            responseType: 'stream'
+        });
 
         const media = {
             mimeType: 'audio/mpeg',
-            body: fs.createReadStream(tempFilePath)
+            body: fileStream.data
         };
+
         const driveResponse = await drive.files.create({
-            resource: { name: `${video.title}.mp3`, parents: [targetFolder] },
+            resource: { 
+                name: `${video.title}.mp3`, 
+                parents: [targetFolder] 
+            },
             media: media,
             fields: 'id, name'
         });
 
-        fs.unlinkSync(tempFilePath);
+        console.log(`✅ Upload Complete: ${driveResponse.data.name}`);
         res.json({ success: true, file: driveResponse.data });
+
     } catch (error) {
-        console.error('Download Failed:', error);
+        console.error('Download Failed:', error.message);
+        if (error.response) {
+            console.error('API Error Data:', error.response.data);
+        }
         res.status(500).send('Download failed: ' + error.message);
     }
 });
