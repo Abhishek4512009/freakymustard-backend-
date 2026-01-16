@@ -129,6 +129,7 @@ router.get('/stream/:fileId', async (req, res) => {
 // --- NEW DOWNLOAD ROUTE (USING COBALT API) ---
 // --- NEW DOWNLOAD ROUTE (USING COBALT API v10) ---
 // --- NEW "SMART" DOWNLOAD ROUTE ---
+// --- NEW DOWNLOAD ROUTE (USING PIPED API) ---
 router.post('/download', async (req, res) => {
     const { songName, username, folderId } = req.body;
     if (!songName) return res.status(400).send('No song name');
@@ -141,113 +142,77 @@ router.post('/download', async (req, res) => {
         if (user) targetFolder = user.folderId;
     }
 
-    // 1. Search YouTube
-    let video;
     try {
-        console.log(`Searching for: ${songName}`);
-        const searchResults = await ytSearch(songName);
-        video = searchResults.videos[0];
-        if (!video) return res.status(404).send('Not found');
-        console.log(`Found: ${video.title}`);
-    } catch (e) {
-        return res.status(500).send('Search failed: ' + e.message);
-    }
-
-    // 2. The "Rotator" Logic
-    // We try multiple servers. If one gives a 401/404/500 or HTML error, we skip it.
-    const cobaltInstances = [
-        'https://cobalt.canine.tools',       // Usually reliable
-        'https://cobalt.ducks.party',        // Reliable backup
-        'https://cobalt.meowing.de',         // Reliable backup
-        'https://api.cobalt.kwiatekmiki.pl', // Backup
-        'https://cobalt.xy24.eu'             // Kept as last resort
-    ];
-
-    let downloadUrl = null;
-    let lastError = null;
-
-    console.log("🚀 Starting Instance Rotation...");
-
-    for (const instance of cobaltInstances) {
-        try {
-            console.log(`Trying server: ${instance}`);
-            const response = await axios.post(instance, {
-                url: video.url,
-                videoQuality: "720",
-                audioFormat: "mp3",
-                downloadMode: "audio"
-            }, {
-                headers: { 
-                    'Accept': 'application/json', 
-                    'Content-Type': 'application/json',
-                    // FAKE USER AGENT to bypass "Anubis" bot protection
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                },
-                timeout: 10000 // 10s timeout
-            });
-
-            const data = response.data;
-            
-            // SECURITY CHECK: Ensure we got JSON, not an HTML error page
-            if (typeof data === 'string' && data.includes('<html')) {
-                throw new Error('Server returned HTML challenge (Bot Blocked)');
-            }
-
-            // Check if we got a valid link
-            if (data.status === 'stream' || data.status === 'redirect') {
-                downloadUrl = data.url;
-            } else if (data.status === 'picker' && data.picker) {
-                const item = data.picker.find(i => i.type === 'audio') || data.picker[0];
-                downloadUrl = item.url;
-            }
-
-            if (downloadUrl) {
-                console.log(`✅ Success with ${instance}`);
-                break; // Stop looping, we found a link!
-            }
-        } catch (error) {
-            const msg = error.response ? `Status ${error.response.status}` : error.message;
-            console.warn(`❌ Failed ${instance}: ${msg}`);
-            lastError = msg;
-            // Loop continues to the next server...
-        }
-    }
-
-    if (!downloadUrl) {
-        return res.status(500).send(`All Cobalt servers failed. Last error: ${lastError}`);
-    }
-
-    // 3. Stream to Drive
-    try {
-        const fileStream = await axios({
-            url: downloadUrl,
-            method: 'GET',
-            responseType: 'stream',
-            headers: {
-                // Pass the fake User-Agent here too, just in case
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        console.log(`Searching Piped Database for: ${songName}`);
+        
+        // 1. Search for the video ID using Piped API
+        // Piped Instances: https://pipedapi.kavin.rocks (Main), https://api.piped.privacy.com.de (Backup)
+        const PIPED_API = 'https://pipedapi.kavin.rocks'; 
+        
+        const searchResponse = await axios.get(`${PIPED_API}/search`, {
+            params: {
+                q: songName,
+                filter: 'music_songs'
             }
         });
 
+        if (!searchResponse.data.items || searchResponse.data.items.length === 0) {
+            return res.status(404).send('Song not found in database');
+        }
+
+        // Get the first result's ID (e.g., "/watch?v=dQw4w9WgXcQ" -> "dQw4w9WgXcQ")
+        const firstResult = searchResponse.data.items[0];
+        const videoId = firstResult.url.split('v=')[1];
+        const videoTitle = firstResult.title.replace(/[^a-zA-Z0-9]/g, '_'); // Clean title
+
+        console.log(`Found: ${firstResult.title} [${videoId}]`);
+
+        // 2. Fetch the Direct Stream Links
+        const streamResponse = await axios.get(`${PIPED_API}/streams/${videoId}`);
+        const audioStreams = streamResponse.data.audioStreams;
+
+        if (!audioStreams || audioStreams.length === 0) {
+            throw new Error('No audio streams found for this video');
+        }
+
+        // 3. Pick the best audio quality (m4a is best for direct streaming)
+        // We look for 'm4a' format, or fallback to the first available one
+        const bestStream = audioStreams.find(s => s.format === 'M4A') || audioStreams[0];
+        
+        console.log(`Sourcing from: ${PIPED_API}`);
+
+        // 4. Stream to Drive
+        const fileStream = await axios({
+            url: bestStream.url,
+            method: 'GET',
+            responseType: 'stream'
+        });
+
         const media = {
-            mimeType: 'audio/mpeg',
+            mimeType: 'audio/mp4', // M4A is technically audio/mp4
             body: fileStream.data
         };
 
         const driveResponse = await drive.files.create({
             resource: { 
-                name: `${video.title}.mp3`, 
+                name: `${videoTitle}.m4a`, // Saving as .m4a (plays in all browsers)
                 parents: [targetFolder] 
             },
             media: media,
             fields: 'id, name'
         });
 
+        console.log(`✅ Upload Complete: ${driveResponse.data.name}`);
         res.json({ success: true, file: driveResponse.data });
 
     } catch (error) {
-        console.error('Upload Error:', error.message);
-        res.status(500).send('Upload failed: ' + error.message);
+        console.error('Download Failed:', error.message);
+        if (error.response) {
+            // Log full API error if available
+            console.error('API Status:', error.response.status);
+            console.error('API Data:', error.response.data);
+        }
+        res.status(500).send('Download failed: ' + error.message);
     }
 });
 
