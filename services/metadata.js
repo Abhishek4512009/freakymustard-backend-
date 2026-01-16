@@ -5,34 +5,34 @@ const Metadata = require('../models/Metadata');
 // Helper: Aggressive Filename Cleaning
 function cleanFilename(filename) {
     let name = filename;
-    
+
     // 1. Remove Extension
     name = name.replace(/\.(mp4|mkv|avi|mov|webp)$/i, '');
-    
+
     // 2. Replace dots/underscores/hyphens/parentheses with spaces
     name = name.replace(/[._\-()]/g, ' ');
 
     // 3. Extract Show Name (Stop at S01, E01, Season, Episode)
-    const seasonMatch = name.match(/S\d{1,2}E\d{1,2}/i) || 
-                        name.match(/Season \d+/i) || 
-                        name.match(/Episode \d+/i);
-    
+    const seasonMatch = name.match(/S\d{1,2}E\d{1,2}/i) ||
+        name.match(/Season \d+/i) ||
+        name.match(/Episode \d+/i);
+
     if (seasonMatch) {
         return name.substring(0, seasonMatch.index).trim();
     }
 
     // 4. Clean Movie Name
     const stopWords = [
-        '1080p', '720p', '2160p', '4k', '5.1', 'web-dl', 'webrip', 'bluray', 
-        'x264', 'x265', 'hevc', 'hdr', 'aac', 'yify', 'yts', 'galaxy', 'bone', 
+        '1080p', '720p', '2160p', '4k', '5.1', 'web-dl', 'webrip', 'bluray',
+        'x264', 'x265', 'hevc', 'hdr', 'aac', 'yify', 'yts', 'galaxy', 'bone',
         'h264', 'h265', '10bit', 'ddp5', 'dd5', 'esub', 'repack', 'rmteam', 'hcsubbed'
     ];
-    
+
     const yearMatch = name.match(/\b(19|20)\d{2}\b/);
     if (yearMatch) {
         const yearIndex = yearMatch.index;
         const potentialName = name.substring(0, yearIndex + 4).trim();
-        return potentialName.replace(/\s+/g, ' '); 
+        return potentialName.replace(/\s+/g, ' ');
     }
 
     for (const word of stopWords) {
@@ -48,7 +48,7 @@ function cleanFilename(filename) {
 async function scrapeIMDb(query) {
     console.log(`🎬 Scraping IMDb for: "${query}"`);
     const searchUrl = `https://www.imdb.com/find/?q=${encodeURIComponent(query)}&s=tt&ttype=ft`;
-    
+
     // Use aggressive headers to look like a real browser
     const { data: searchHtml } = await axios.get(searchUrl, {
         headers: {
@@ -60,7 +60,7 @@ async function scrapeIMDb(query) {
     });
 
     const $ = cheerio.load(searchHtml);
-    
+
     // Robust Selector: Find any link containing /title/tt
     // The previous specific class selector became invalid.
     let firstResultLink = null;
@@ -76,7 +76,7 @@ async function scrapeIMDb(query) {
 
     const moviePageUrl = `https://www.imdb.com${firstResultLink}`;
     const { data: movieHtml } = await axios.get(moviePageUrl, {
-        headers: { 
+        headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9'
         }
@@ -118,7 +118,7 @@ async function fetchMovieMeta(filename) {
                 }
             }
         } else {
-             console.error(`   ❌ Failed to scrape: ${filename} (${e.message})`);
+            console.error(`   ❌ Failed to scrape: ${filename} (${e.message})`);
         }
     }
 
@@ -133,7 +133,7 @@ async function fetchSeriesMeta(filename) {
     if (cached) return cached;
 
     let showName = cleanFilename(filename).replace(/\s(19|20)\d{2}$/, '').trim();
-    
+
     // Extract Episode Info for Display
     const episodeMatch = filename.match(/S(\d{1,2})E(\d{1,2})/i);
     let episodeTag = '';
@@ -149,9 +149,9 @@ async function fetchSeriesMeta(filename) {
 
         const meta = {
             filename,
-            title: data.name + episodeTag, 
-            poster: data.image ? data.image.medium : '', 
-            description: data.summary ? data.summary.replace(/<[^>]*>/g, '') : '', 
+            title: data.name + episodeTag,
+            poster: data.image ? data.image.medium : '',
+            description: data.summary ? data.summary.replace(/<[^>]*>/g, '') : '',
             year: data.premiered ? data.premiered.split('-')[0] : '',
             type: 'series'
         };
