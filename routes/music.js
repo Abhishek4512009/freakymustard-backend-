@@ -128,6 +128,7 @@ router.get('/stream/:fileId', async (req, res) => {
 
 // --- NEW DOWNLOAD ROUTE (USING COBALT API) ---
 // --- NEW DOWNLOAD ROUTE (USING COBALT API v10) ---
+// --- NEW "SMART" DOWNLOAD ROUTE ---
 router.post('/download', async (req, res) => {
     const { songName, username, folderId } = req.body;
     if (!songName) return res.status(400).send('No song name');
@@ -140,60 +141,92 @@ router.post('/download', async (req, res) => {
         if (user) targetFolder = user.folderId;
     }
 
+    // 1. Search YouTube
+    let video;
     try {
-        // 1. Search YouTube for the Link
         console.log(`Searching for: ${songName}`);
         const searchResults = await ytSearch(songName);
-        const video = searchResults.videos[0];
+        video = searchResults.videos[0];
         if (!video) return res.status(404).send('Not found');
+        console.log(`Found: ${video.title}`);
+    } catch (e) {
+        return res.status(500).send('Search failed: ' + e.message);
+    }
 
-        console.log(`Found video: ${video.title} (${video.url})`);
+    // 2. The "Rotator" Logic
+    // We try multiple servers. If one gives a 401/404/500 or HTML error, we skip it.
+    const cobaltInstances = [
+        'https://cobalt.canine.tools',       // Usually reliable
+        'https://cobalt.ducks.party',        // Reliable backup
+        'https://cobalt.meowing.de',         // Reliable backup
+        'https://api.cobalt.kwiatekmiki.pl', // Backup
+        'https://cobalt.xy24.eu'             // Kept as last resort
+    ];
 
-        // ... inside the /download route ...
+    let downloadUrl = null;
+    let lastError = null;
 
-        // 2. Ask Cobalt for a Clean Download Link
-        // Replaced broken instance with a new working one
-        // Alternates if this fails: 'https://cobalt.meowing.de', 'https://api.cobalt.kwiatekmiki.pl'
-        const COBALT_API_URL = 'https://cobalt.canine.tools'; 
+    console.log("🚀 Starting Instance Rotation...");
 
-        const cobaltResponse = await axios.post(COBALT_API_URL, {
-            url: video.url,
-            videoQuality: "720",
-            audioFormat: "mp3",
-            downloadMode: "audio" // ensures v10 compatibility
-        }, {
-            headers: {
-                'Accept': 'application/json',
-                'Content-Type': 'application/json'
+    for (const instance of cobaltInstances) {
+        try {
+            console.log(`Trying server: ${instance}`);
+            const response = await axios.post(instance, {
+                url: video.url,
+                videoQuality: "720",
+                audioFormat: "mp3",
+                downloadMode: "audio"
+            }, {
+                headers: { 
+                    'Accept': 'application/json', 
+                    'Content-Type': 'application/json',
+                    // FAKE USER AGENT to bypass "Anubis" bot protection
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                },
+                timeout: 10000 // 10s timeout
+            });
+
+            const data = response.data;
+            
+            // SECURITY CHECK: Ensure we got JSON, not an HTML error page
+            if (typeof data === 'string' && data.includes('<html')) {
+                throw new Error('Server returned HTML challenge (Bot Blocked)');
             }
-        });
 
-        // ... rest of the code remains the same ...
+            // Check if we got a valid link
+            if (data.status === 'stream' || data.status === 'redirect') {
+                downloadUrl = data.url;
+            } else if (data.status === 'picker' && data.picker) {
+                const item = data.picker.find(i => i.type === 'audio') || data.picker[0];
+                downloadUrl = item.url;
+            }
 
-        const data = cobaltResponse.data;
-        
-        // Handle different response statuses (stream, redirect, picker, etc.)
-        let downloadUrl = null;
-        if (data.status === 'stream' || data.status === 'redirect') {
-            downloadUrl = data.url;
-        } else if (data.status === 'picker' && data.picker && data.picker.length > 0) {
-            // If it returns a list of items (picker), grab the first audio one
-            const item = data.picker.find(i => i.type === 'audio') || data.picker[0];
-            downloadUrl = item.url;
+            if (downloadUrl) {
+                console.log(`✅ Success with ${instance}`);
+                break; // Stop looping, we found a link!
+            }
+        } catch (error) {
+            const msg = error.response ? `Status ${error.response.status}` : error.message;
+            console.warn(`❌ Failed ${instance}: ${msg}`);
+            lastError = msg;
+            // Loop continues to the next server...
         }
+    }
 
-        if (!downloadUrl) {
-            console.error('Cobalt Response:', data);
-            throw new Error('Cobalt could not generate a direct download link.');
-        }
+    if (!downloadUrl) {
+        return res.status(500).send(`All Cobalt servers failed. Last error: ${lastError}`);
+    }
 
-        console.log(`Cobalt Link Generated. Starting Stream to Drive...`);
-
-        // 3. Stream the File Directly from Cobalt to Google Drive
+    // 3. Stream to Drive
+    try {
         const fileStream = await axios({
             url: downloadUrl,
             method: 'GET',
-            responseType: 'stream'
+            responseType: 'stream',
+            headers: {
+                // Pass the fake User-Agent here too, just in case
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
         });
 
         const media = {
@@ -210,15 +243,11 @@ router.post('/download', async (req, res) => {
             fields: 'id, name'
         });
 
-        console.log(`✅ Upload Complete: ${driveResponse.data.name}`);
         res.json({ success: true, file: driveResponse.data });
 
     } catch (error) {
-        console.error('Download Failed:', error.message);
-        if (error.response) {
-            console.error('API Error Data:', error.response.data);
-        }
-        res.status(500).send('Download failed: ' + error.message);
+        console.error('Upload Error:', error.message);
+        res.status(500).send('Upload failed: ' + error.message);
     }
 });
 
