@@ -4,6 +4,7 @@
   "description": "Drive Streaming Proxy",
   "main": "server.js",
   "dependencies": {
+    "adm-zip": "^0.5.16",
     "axios": "^1.13.2",
     "cheerio": "^1.0.0",
     "cors": "^2.8.5",
