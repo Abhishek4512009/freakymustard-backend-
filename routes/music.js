@@ -149,22 +149,26 @@ router.post('/download', async (req, res) => {
 
         console.log(`Found video: ${video.title} (${video.url})`);
 
+        // ... inside the /download route ...
+
         // 2. Ask Cobalt for a Clean Download Link
-        // We use a community instance because the main API is restricted
-        // You can find more instances at https://cobalt.directory/ if this one goes down
-        const COBALT_API_URL = 'https://cobalt.xy24.eu'; // Try this or 'https://cobalt.ayo.tf'
+        // Replaced broken instance with a new working one
+        // Alternates if this fails: 'https://cobalt.meowing.de', 'https://api.cobalt.kwiatekmiki.pl'
+        const COBALT_API_URL = 'https://cobalt.canine.tools'; 
 
         const cobaltResponse = await axios.post(COBALT_API_URL, {
             url: video.url,
             videoQuality: "720",
             audioFormat: "mp3",
-            downloadMode: "audio" // NEW: Replaces 'isAudioOnly'
+            downloadMode: "audio" // ensures v10 compatibility
         }, {
             headers: {
                 'Accept': 'application/json',
                 'Content-Type': 'application/json'
             }
         });
+
+        // ... rest of the code remains the same ...
 
         const data = cobaltResponse.data;
         
