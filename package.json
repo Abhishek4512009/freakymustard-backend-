@@ -19,6 +19,6 @@
   },
   "scripts": {
     "start": "node server.js",
-    "postinstall": "node download_binary.js"
+    "postinstall": "curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ./yt-dlp && chmod +x ./yt-dlp"
   }
 }
