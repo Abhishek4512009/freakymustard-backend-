@@ -62,14 +62,15 @@ router.get('/list', async (req, res) => {
             } 
             
             // 2. Handle SERIES FOLDERS (Fetch Meta for the Show)
-            else if (category === 'series' && file.mimeType === 'application/vnd.google-apps.folder') {
+            // ONLY explicitly if we are at the root (no folderId param)
+            else if (category === 'series' && !folderId && file.mimeType === 'application/vnd.google-apps.folder') {
                 let meta;
                 try {
                    // Verify it's not a season folder (optional, but good practice). 
                    // For now, we assume top-level folders in 'Series' are Shows.
                    meta = await fetchSeriesMeta(file.name);
                 } catch (err) {
-                   console.error(`Metadata failed for folder ${file.name}:`, err.message);
+                   // console.error(`Metadata failed for folder ${file.name}:`, err.message);
                    meta = { filename: file.name, title: file.name, poster: '' };
                 }
                 return { ...file, metadata: meta };
