@@ -3,8 +3,6 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const connectDB = require('./db');
-
-// Connect to MongoDB
 const YTDlpWrap = require('yt-dlp-wrap').default;
 const fs = require('fs');
 
@@ -31,15 +29,4 @@ const PORT = process.env.PORT || 3000;
 // Start Server
 app.listen(PORT, () => {
     console.log(`🚀 Unified Streamer running on port ${PORT}`);
-
-    // --- KEEP-ALIVE HEARTBEAT ---
-    // Pings the public URL to ensure Render's load balancer sees activity
-    const https = require('https');
-    setInterval(() => {
-        https.get('https://freakymustard.onrender.com', (res) => {
-            // console.log('💓 Heartbeat sent to public URL');
-        }).on('error', (err) => {
-            console.error('Heartbeat failed:', err.message);
-        });
-    }, 5 * 60 * 1000); // 5 Minutes
 });
