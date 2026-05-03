@@ -3,6 +3,7 @@ const router = express.Router();
 const { drive } = require('../auth'); // Adjust path if needed
 const User = require('../models/User');
 const ytSearch = require('yt-search');
+const ytdl = require('ytdl-core');
 const axios = require('axios'); // We use this for Cobalt
 const path = require('path');
 const os = require('os');
@@ -135,7 +136,7 @@ router.get('/stream/:fileId', async (req, res) => {
 // --- BIZARRE SOLUTION: THE BOLLYWOOD BACKDOOR (JioSaavn) ---
 router.post('/download', async (req, res) => {
     const { songName, username, folderId } = req.body;
-    if (!songName) return res.status(400).send('No song name');
+    if (!songName) return res.status(400).send('No song name provided');
 
     let targetFolder = SPECIFIC_FOLDER_ID;
     if (folderId) {
@@ -146,59 +147,40 @@ router.post('/download', async (req, res) => {
     }
 
     try {
-        console.log(`Searching JioSaavn for: ${songName}`);
+        console.log(`Searching YouTube for: ${songName}`);
         
-        // 1. Search using the public Saavn API
-        // This API returns metadata + direct download links
-        const SAAVN_API = 'https://saavn.dev/api/search/songs';
-        const searchResponse = await axios.get(SAAVN_API, {
-            params: { query: songName }
-        });
+        const searchResults = await ytSearch(songName);
+        const videos = searchResults.videos;
 
-        const results = searchResponse.data.data.results;
-
-        if (!results || results.length === 0) {
-            return res.status(404).send('Song not found on JioSaavn (try adding artist name)');
+        if (!videos || videos.length === 0) {
+            return res.status(404).send('Song not found on YouTube.');
         }
 
-        // 2. Pick the first result
-        const song = results[0];
-        console.log(`Found: ${song.name} by ${song.primaryArtists}`);
+        const topVideo = videos[0];
+        console.log(`Found on YouTube: ${topVideo.title} (${topVideo.timestamp})`);
 
-        // 3. Extract the Highest Quality Download Link
-        // The API returns an array of qualities. The last one is usually 320kbps/Best.
-        if (!song.downloadUrl || song.downloadUrl.length === 0) {
-            throw new Error('No download links found for this song.');
-        }
-        
-        // Use the last link in the array (usually the highest quality)
-        const bestQuality = song.downloadUrl[song.downloadUrl.length - 1]; 
-        const downloadLink = bestQuality.url;
+        const cleanTitle = topVideo.title.replace(/[^a-zA-Z0-9 \-\.]/g, '');
 
-        console.log(`Source Quality: ${bestQuality.quality}`);
-
-        // 4. Stream to Drive
-        // Note: Saavn links sometimes expire, so we stream immediately.
-        const fileStream = await axios({
-            url: downloadLink,
-            method: 'GET',
-            responseType: 'stream'
+        console.log('Initiating audio stream extraction...');
+        const audioStream = ytdl(topVideo.url, {
+            quality: 'highestaudio',
+            filter: 'audioonly'
         });
 
-        // Clean up the filename
-        const cleanTitle = `${song.name} - ${song.primaryArtists}`.replace(/[^a-zA-Z0-9 \-\.]/g, '');
-
-        const media = {
-            mimeType: 'audio/mpeg', // It's usually MP3 or M4A
-            body: fileStream.data
-        };
+        audioStream.on('error', (err) => {
+            console.error('YouTube Stream Error:', err.message);
+            throw new Error('Failed to stream audio from YouTube.');
+        });
 
         const driveResponse = await drive.files.create({
             resource: { 
                 name: `${cleanTitle}.mp3`, 
                 parents: [targetFolder] 
             },
-            media: media,
+            media: {
+                mimeType: 'audio/mp4', 
+                body: audioStream
+            },
             fields: 'id, name'
         });
 
@@ -206,11 +188,7 @@ router.post('/download', async (req, res) => {
         res.json({ success: true, file: driveResponse.data });
 
     } catch (error) {
-        console.error('Saavn Error:', error.message);
-        // Fallback or error logging
-        if (error.response) {
-            console.error('API Response:', error.response.data);
-        }
+        console.error('YouTube Download/Upload Error:', error.message);
         res.status(500).send('Download failed: ' + error.message);
     }
 });
