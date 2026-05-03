@@ -149,22 +149,21 @@ router.post('/download', async (req, res) => {
         const topVideo = searchResults.videos[0];
         const cleanTitle = topVideo.title.replace(/[^a-zA-Z0-9 \-\.]/g, '');
 
-        // 1. Setup yt-dlp binary path
         const ytDlpPath = fs.existsSync('./yt-dlp') ? './yt-dlp' : undefined;
         const ytDlpWrap = new YTDlpWrap(ytDlpPath);
 
-        // 2. Build Arguments (including cookies if they exist)
         const args = [
             topVideo.url,
             '-f', 'bestaudio[ext=m4a]/bestaudio',
             '--no-check-certificates'
         ];
 
+        // Write Netscape cookies directly to a temp file
         if (process.env.YOUTUBE_COOKIES) {
-            const cookiePath = path.join('/tmp', 'youtube_cookies.json');
+            const cookiePath = path.join('/tmp', 'youtube_cookies.txt');
             fs.writeFileSync(cookiePath, process.env.YOUTUBE_COOKIES);
             args.push('--cookies', cookiePath);
-            console.log('Using authenticated cookies for yt-dlp...');
+            console.log('Applied Netscape cookies to yt-dlp.');
         }
 
         console.log('Initiating yt-dlp extraction...');
