@@ -3,13 +3,11 @@ const router = express.Router();
 const { drive } = require('../auth'); // Adjust path if needed
 const User = require('../models/User');
 const ytSearch = require('yt-search');
-const ytdl = require('@distube/ytdl-core');
-const axios = require('axios'); // We use this for Cobalt
+// Import yt-dlp-wrap (handling CommonJS default exports safely)
+const YTDlpWrap = require('yt-dlp-wrap').default || require('yt-dlp-wrap');
 const path = require('path');
 const os = require('os');
-
-// Silence the ytdl-core update warning
-process.env.YTDL_NO_UPDATE = '1';
+const fs = require('fs');
 
 // Global Config
 const SPECIFIC_FOLDER_ID = process.env.FOLDER_ID;
@@ -130,7 +128,7 @@ router.get('/stream/:fileId', async (req, res) => {
     }
 });
 
-// --- NEW DOWNLOAD ROUTE (USING YOUTUBE WITH COOKIES) ---
+// --- NEW DOWNLOAD ROUTE (USING THE ULTIMATE WEAPON: YT-DLP) ---
 router.post('/download', async (req, res) => {
     const { songName, username, folderId } = req.body;
     if (!songName) return res.status(400).send('No song name provided');
@@ -154,34 +152,28 @@ router.post('/download', async (req, res) => {
         }
 
         const topVideo = videos[0];
-        console.log(`Found on YouTube: ${topVideo.title} (${topVideo.timestamp})`);
-
+        console.log(`Found on YouTube: ${topVideo.title}`);
         const cleanTitle = topVideo.title.replace(/[^a-zA-Z0-9 \-\.]/g, '');
 
-        console.log('Initiating audio stream extraction...');
+        console.log('Initiating yt-dlp binary extraction...');
         
-        // Setup Agent with Cookies from Render Environment Variables
-        let agentOptions = {};
-        if (process.env.YOUTUBE_COOKIES) {
-            try {
-                const cookies = JSON.parse(process.env.YOUTUBE_COOKIES);
-                agentOptions = { agent: ytdl.createAgent(cookies) };
-                console.log('Using authenticated YouTube agent...');
-            } catch (e) {
-                console.error('Failed to parse YOUTUBE_COOKIES env variable:', e.message);
-            }
-        }
+        // Initialize yt-dlp. 
+        // If your download_binary.js places it in the root folder, it uses it. 
+        // Otherwise, it falls back to global system variables.
+        const ytDlpPath = fs.existsSync('./yt-dlp') ? './yt-dlp' : undefined;
+        const ytDlpWrap = new YTDlpWrap(ytDlpPath);
 
-        const audioStream = ytdl(topVideo.url, {
-            ...agentOptions,
-            quality: 'highestaudio',
-            filter: 'audioonly'
-        });
+        // Execute yt-dlp and ask it to output a direct, readable Node stream of the best audio
+        const audioStream = ytDlpWrap.execStream([
+            topVideo.url,
+            '-f', 'bestaudio[ext=m4a]/bestaudio', // Grabs the highest quality m4a audio
+        ]);
 
         audioStream.on('error', (err) => {
-            console.error('YouTube Stream Error:', err.message);
-            throw new Error('Failed to stream audio from YouTube.');
+            console.error('yt-dlp Stream Error:', err.message);
         });
+
+        console.log('Piping directly to Google Drive...');
 
         const driveResponse = await drive.files.create({
             resource: { 
@@ -190,7 +182,7 @@ router.post('/download', async (req, res) => {
             },
             media: {
                 mimeType: 'audio/mp4', 
-                body: audioStream
+                body: audioStream // yt-dlp streams beautifully right into Drive
             },
             fields: 'id, name'
         });
