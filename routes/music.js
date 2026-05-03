@@ -143,47 +143,38 @@ router.post('/download', async (req, res) => {
 
     try {
         console.log(`Searching YouTube for: ${songName}`);
-        
         const searchResults = await ytSearch(songName);
-        const videos = searchResults.videos;
+        if (!searchResults.videos.length) return res.status(404).send('Not found.');
 
-        if (!videos || videos.length === 0) {
-            return res.status(404).send('Song not found on YouTube.');
-        }
-
-        const topVideo = videos[0];
-        console.log(`Found on YouTube: ${topVideo.title}`);
+        const topVideo = searchResults.videos[0];
         const cleanTitle = topVideo.title.replace(/[^a-zA-Z0-9 \-\.]/g, '');
 
-        console.log('Initiating yt-dlp binary extraction...');
-        
-        // Initialize yt-dlp. 
-        // If your download_binary.js places it in the root folder, it uses it. 
-        // Otherwise, it falls back to global system variables.
+        // 1. Setup yt-dlp binary path
         const ytDlpPath = fs.existsSync('./yt-dlp') ? './yt-dlp' : undefined;
         const ytDlpWrap = new YTDlpWrap(ytDlpPath);
 
-        // Execute yt-dlp and ask it to output a direct, readable Node stream of the best audio
-        const audioStream = ytDlpWrap.execStream([
+        // 2. Build Arguments (including cookies if they exist)
+        const args = [
             topVideo.url,
-            '-f', 'bestaudio[ext=m4a]/bestaudio', // Grabs the highest quality m4a audio
-        ]);
+            '-f', 'bestaudio[ext=m4a]/bestaudio',
+            '--no-check-certificates'
+        ];
 
-        audioStream.on('error', (err) => {
-            console.error('yt-dlp Stream Error:', err.message);
-        });
+        if (process.env.YOUTUBE_COOKIES) {
+            const cookiePath = path.join('/tmp', 'youtube_cookies.json');
+            fs.writeFileSync(cookiePath, process.env.YOUTUBE_COOKIES);
+            args.push('--cookies', cookiePath);
+            console.log('Using authenticated cookies for yt-dlp...');
+        }
 
-        console.log('Piping directly to Google Drive...');
+        console.log('Initiating yt-dlp extraction...');
+        const audioStream = ytDlpWrap.execStream(args);
+
+        audioStream.on('error', (err) => console.error('yt-dlp Stream Error:', err.message));
 
         const driveResponse = await drive.files.create({
-            resource: { 
-                name: `${cleanTitle}.mp3`, 
-                parents: [targetFolder] 
-            },
-            media: {
-                mimeType: 'audio/mp4', 
-                body: audioStream // yt-dlp streams beautifully right into Drive
-            },
+            resource: { name: `${cleanTitle}.mp3`, parents: [targetFolder] },
+            media: { mimeType: 'audio/mp4', body: audioStream },
             fields: 'id, name'
         });
 
@@ -191,9 +182,8 @@ router.post('/download', async (req, res) => {
         res.json({ success: true, file: driveResponse.data });
 
     } catch (error) {
-        console.error('YouTube Download/Upload Error:', error.message);
+        console.error('Download Error:', error.message);
         res.status(500).send('Download failed: ' + error.message);
     }
 });
-
 module.exports = router;
