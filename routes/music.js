@@ -8,6 +8,9 @@ const axios = require('axios'); // We use this for Cobalt
 const path = require('path');
 const os = require('os');
 
+// Silence the ytdl-core update warning
+process.env.YTDL_NO_UPDATE = '1';
+
 // Global Config
 const SPECIFIC_FOLDER_ID = process.env.FOLDER_ID;
 
@@ -127,13 +130,7 @@ router.get('/stream/:fileId', async (req, res) => {
     }
 });
 
-// --- NEW DOWNLOAD ROUTE (USING COBALT API) ---
-// --- NEW DOWNLOAD ROUTE (USING COBALT API v10) ---
-// --- NEW "SMART" DOWNLOAD ROUTE ---
-// --- NEW DOWNLOAD ROUTE (USING PIPED API) ---
-// --- DYNAMIC INSTANCE MANAGER ---
-// Fetches the list of active Piped servers so you don't rely on just one.
-// --- BIZARRE SOLUTION: THE BOLLYWOOD BACKDOOR (JioSaavn) ---
+// --- NEW DOWNLOAD ROUTE (USING YOUTUBE WITH COOKIES) ---
 router.post('/download', async (req, res) => {
     const { songName, username, folderId } = req.body;
     if (!songName) return res.status(400).send('No song name provided');
@@ -162,7 +159,21 @@ router.post('/download', async (req, res) => {
         const cleanTitle = topVideo.title.replace(/[^a-zA-Z0-9 \-\.]/g, '');
 
         console.log('Initiating audio stream extraction...');
+        
+        // Setup Agent with Cookies from Render Environment Variables
+        let agentOptions = {};
+        if (process.env.YOUTUBE_COOKIES) {
+            try {
+                const cookies = JSON.parse(process.env.YOUTUBE_COOKIES);
+                agentOptions = { agent: ytdl.createAgent(cookies) };
+                console.log('Using authenticated YouTube agent...');
+            } catch (e) {
+                console.error('Failed to parse YOUTUBE_COOKIES env variable:', e.message);
+            }
+        }
+
         const audioStream = ytdl(topVideo.url, {
+            ...agentOptions,
             quality: 'highestaudio',
             filter: 'audioonly'
         });
@@ -192,4 +203,5 @@ router.post('/download', async (req, res) => {
         res.status(500).send('Download failed: ' + error.message);
     }
 });
+
 module.exports = router;
